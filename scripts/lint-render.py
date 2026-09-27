@@ -995,11 +995,24 @@ def template_mobile_failures(context, template_paths=None):
     return failures
 
 
-# The widest presets in output-spec.md (doc-wide, slide-16x9). With min-width
-# pinned to the viewBox width they are wider than every template's 1200px frame.
-WIDE_PRESET = (1280, 720)
+OUTPUT_SPEC_DOC = ROOT / "skills/diagram-design/references/output-spec.md"
+
+
+def output_spec_widest_preset():
+    """The widest fixed viewBox in the output-spec.md size table, or None."""
+    text = OUTPUT_SPEC_DOC.read_text(encoding="utf-8")
+    sizes = re.findall(r"^\| `[a-z0-9-]+` \| `0 0 (\d+) (\d+)`", text, re.M)
+    return max((int(w), int(h)) for w, h in sizes) if sizes else None
+
+
+# The export check re-draws each template at the widest fixed preset in
+# output-spec.md (print-a3-landscape, 1584 wide, at the time of writing). With
+# min-width pinned to the viewBox width, every preset from 1280 up is wider than
+# the templates' 1200px frame; the widest is the hardest to capture whole. The
+# self-test fails if this falls back or drifts from the table.
+WIDE_PRESET = output_spec_widest_preset() or (1280, 720)
 # A node in the rightmost 100 units of the wide preset; the PNG must paint it.
-EXPORT_PROBE = {"x": 1180, "y": 300, "width": 80, "height": 60}
+EXPORT_PROBE = {"x": WIDE_PRESET[0] - 100, "y": WIDE_PRESET[1] // 2 - 32, "width": 80, "height": 60}
 EXPORT_PROBE_MARKUP = (
     '<rect id="export-probe" x="{x}" y="{y}" width="{width}" height="{height}" '
     'fill="#ff00ff"/>'.format(**EXPORT_PROBE)
@@ -1035,8 +1048,9 @@ def export_recipe():
 
 
 def wide_preset_fixture(html):
-    """Re-draw a template at the 1280-wide preset the way output-spec.md says:
-    viewBox and min-width both 1280, plus a probe node at the right edge.
+    """Re-draw a template at the widest preset the way output-spec.md says:
+    viewBox and min-width both at the preset width, plus a probe node at the
+    right edge.
     Remote <link>s are dropped so the recipe runs without a network."""
     match = re.search(r'<svg\b[^>]*\bviewBox="0 0 (\d+) (\d+)"', html)
     if match is None:
@@ -1347,9 +1361,21 @@ def self_test(context):
         if not any("template-mobile-type-ramp" in f for f in template_mobile_failures(context, [absent])):
             failures.append("template-no-min-width-fixture: absent min-width was treated as a pass")
 
-    # Export of a wide preset, both polarities: a 1280 SVG in a local scroller
-    # inside the 1200px frame must come out whole, and a probe node that really
-    # is cut off (clip-path, which export does not release) must be reported.
+    # The export check must cover the widest preset output-spec.md offers, or
+    # clipping that only a wider preset hits goes untested.
+    checks += 1
+    widest = output_spec_widest_preset()
+    if widest is None:
+        failures.append("template-export-widest-preset: no viewBox rows in the output-spec.md size table")
+    elif WIDE_PRESET != widest:
+        failures.append(
+            f"template-export-widest-preset: the export check uses {WIDE_PRESET[0]}x{WIDE_PRESET[1]}, "
+            f"but the widest output-spec.md preset is {widest[0]}x{widest[1]}"
+        )
+
+    # Export of the wide preset, both polarities: an SVG wider than the 1200px
+    # frame, held in a local scroller, must come out whole, and a probe node that
+    # really is cut off (clip-path, which export does not release) must be reported.
     checks += 2
     recipe = export_recipe()
     if recipe is None:
@@ -1358,9 +1384,11 @@ def self_test(context):
         wide_page = (
             '<!DOCTYPE html><html><style>body{{margin:0;padding:32px;background:#f5f5f5}}'
             '.frame{{max-width:1200px;width:100%}}.diagram-container{{width:100%;overflow-x:auto}}'
-            'svg{{width:100%;min-width:1280px;display:block}}</style><body><div class="frame">'
-            '<div class="diagram-container"{clip}><svg viewBox="0 0 1280 720" '
-            'xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#f5f5f5"/>'
+            'svg{{width:100%;min-width:' + str(WIDE_PRESET[0]) + 'px;display:block}}</style>'
+            '<body><div class="frame"><div class="diagram-container"{clip}>'
+            '<svg viewBox="0 0 ' + f"{WIDE_PRESET[0]} {WIDE_PRESET[1]}" + '" '
+            'xmlns="http://www.w3.org/2000/svg"><rect width="' + str(WIDE_PRESET[0])
+            + '" height="' + str(WIDE_PRESET[1]) + '" fill="#f5f5f5"/>'
             + EXPORT_PROBE_MARKUP
             + "</svg></div></div></body></html>"
         )
@@ -1369,7 +1397,7 @@ def self_test(context):
         )
         if scroller_failures:
             failures.append(
-                "template-export-scroller-fixture: the recipe clipped a 1280 SVG held in a "
+                f"template-export-scroller-fixture: the recipe clipped a {WIDE_PRESET[0]}-wide SVG held in a "
                 "local scroller: " + "; ".join(scroller_failures)
             )
         clipped_failures = export_png_failures(
